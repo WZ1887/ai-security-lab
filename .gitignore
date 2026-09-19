@@ -1,0 +1,14 @@
+# 忽略虚拟环境
+.venv/
+venv/
+
+# 忽略 PyCharm 配置
+.idea/
+.vscode/
+
+# 忽略本地数据库（每次运行 build_db.py 会自动生成）
+chroma_db/
+
+# 忽略 Python 缓存
+__pycache__/
+*.pyc
