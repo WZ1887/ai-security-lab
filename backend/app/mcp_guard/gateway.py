@@ -1,9 +1,11 @@
-"""MCP-Guard Gateway：串联 G1-G5。
+"""MCP-Guard Gateway：串联 G1-G5 + 审计落库。
 
 对外只暴露一个入口：handle_tool_call。
 内部按顺序执行五层安全 Gate，任一层失败即终止并返回审计。
+每次调用写 audit_events 表。
 """
 
+import hashlib
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -34,27 +36,28 @@ from app.mcp_guard.g5 import (
     ExecutionInput,
     run as execution_run,
 )
+from app.mcp_guard.audit.logger import write_event as audit_write
 
 
 @dataclass
 class GatewayRequest:
     # 身份上下文
-    session_id: str
-    user_id: str
-    tenant_id: str
-    roles: list[str]
-    agent_id: str
+    session_id: str = ""
+    user_id: str = ""
+    tenant_id: str = ""
+    roles: list[str] = field(default_factory=list)
+    agent_id: str = ""
     delegation_scope: list[str] = field(default_factory=list)
 
-        # 用户输入（原始）
+    # 用户输入（原始）
     user_input: str = ""
-    
+
     # 工具调用意图
     server_id: str = ""
     tool_name: str = ""
     tool_version: str = ""
     tool_arguments: dict = field(default_factory=dict)
-    tool_hashes: dict = field(default_factory=dict)  # 4 个 hash
+    tool_hashes: dict = field(default_factory=dict)
 
     # 已有数据标签（来自上一次工具返回）
     data_labels_in: list[str] = field(default_factory=list)
@@ -86,33 +89,76 @@ class GatewayResponse:
 
     # 审计
     event_id: str = ""
+    audit_id: int | None = None
     latency_ms: int = 0
 
 
-def _empty_result(reason: str, gate: str | None = None) -> GatewayResponse:
-    return GatewayResponse(
-        allowed=False,
-        decision="DENY",
-        final_reason=reason,
-        blocked_gate=gate,
-        event_id=str(uuid.uuid4()),
-    )
+def _sha256(obj) -> str:
+    if isinstance(obj, str):
+        data = obj.encode("utf-8")
+    else:
+        import json
+        data = json.dumps(obj, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def _finalize(
+    db: Session,
+    req: GatewayRequest,
+    resp: GatewayResponse,
+    start: float,
+) -> GatewayResponse:
+    resp.latency_ms = int((time.perf_counter() - start) * 1000)
+
+    if resp.decision == "PENDING":
+        resp.decision = "DENY"
+    resp.allowed = resp.decision == "ALLOW"
+
+    gate_results = {
+        "g1": resp.g1,
+        "g2": resp.g2,
+        "g3": resp.g3,
+        "g4": resp.g4,
+        "g5": resp.g5,
+    }
+
+    try:
+        ev = audit_write(
+            db,
+            tenant_id=req.tenant_id or "unknown",
+            session_id=req.session_id or None,
+            subject=req.user_id or None,
+            agent=req.agent_id or None,
+            server_id=req.server_id or None,
+            tool_name=req.tool_name or None,
+            gate_results=gate_results,
+            policy_action=resp.decision,
+            policy_reason=resp.final_reason,
+            input_hash=_sha256(req.user_input) if req.user_input else None,
+            tool_schema_hash=req.tool_hashes.get("input_schema_hash"),
+            result_hash=_sha256(resp.result) if resp.result else None,
+            risk_score=resp.g2.get("risk_score"),
+            latency_ms=resp.latency_ms,
+        )
+        resp.audit_id = ev.id
+    except Exception as e:
+        print(f"[audit] write failed: {type(e).__name__}: {e}")
+
+    return resp
 
 
 def handle_tool_call(db: Session, req: GatewayRequest) -> GatewayResponse:
     start = time.perf_counter()
-    event_id = str(uuid.uuid4())
 
     resp = GatewayResponse(
         allowed=False,
         decision="PENDING",
         final_reason="PENDING",
-        event_id=event_id,
+        event_id=str(uuid.uuid4()),
     )
 
     # ---------- G1 Canonicalization ----------
-    g1_in = CanonicalizeInput(raw_text=req.user_input, source="user")
-    g1_out = canonicalize(g1_in)
+    g1_out = canonicalize(CanonicalizeInput(raw_text=req.user_input, source="user"))
     resp.g1 = {
         "transformations": g1_out.transformations,
         "risk_signals": g1_out.risk_signals,
@@ -124,8 +170,7 @@ def handle_tool_call(db: Session, req: GatewayRequest) -> GatewayResponse:
         resp.decision = "DENY"
         resp.final_reason = "G1_HIGH_EXPANSION"
         resp.blocked_gate = "G1"
-        resp.latency_ms = int((time.perf_counter() - start) * 1000)
-        return resp
+        return _finalize(db, req, resp, start)
 
     # ---------- G2 Semantic Risk ----------
     g2_out = semantic_analyze(
@@ -144,15 +189,13 @@ def handle_tool_call(db: Session, req: GatewayRequest) -> GatewayResponse:
         "elapsed_ms": g2_out.elapsed_ms,
     }
 
-    # ---------- G3 Tool Trust ----------
-    # 如果本次没有工具调用，只做 G1+G2，返回放行
+    # ---------- 无工具调用 → 只做 G1+G2 ----------
     if not req.tool_name:
         resp.decision = "ALLOW"
         resp.final_reason = "NO_TOOL_CALL"
-        resp.allowed = True
-        resp.latency_ms = int((time.perf_counter() - start) * 1000)
-        return resp
+        return _finalize(db, req, resp, start)
 
+    # ---------- G3 Tool Trust ----------
     g3_out = tool_validate(
         db,
         ToolCallInput(
@@ -178,8 +221,7 @@ def handle_tool_call(db: Session, req: GatewayRequest) -> GatewayResponse:
         resp.decision = "DENY"
         resp.final_reason = f"G3_{g3_out.reason}"
         resp.blocked_gate = "G3"
-        resp.latency_ms = int((time.perf_counter() - start) * 1000)
-        return resp
+        return _finalize(db, req, resp, start)
 
     # ---------- G4 Policy + Data Flow ----------
     g4_out = policy_evaluate(
@@ -216,8 +258,7 @@ def handle_tool_call(db: Session, req: GatewayRequest) -> GatewayResponse:
         resp.decision = "DENY"
         resp.final_reason = f"G4_{g4_out.reason}"
         resp.blocked_gate = "G4"
-        resp.latency_ms = int((time.perf_counter() - start) * 1000)
-        return resp
+        return _finalize(db, req, resp, start)
 
     # ---------- G5 Approval + Execution + Result ----------
     g5_out = execution_run(
@@ -245,14 +286,10 @@ def handle_tool_call(db: Session, req: GatewayRequest) -> GatewayResponse:
         resp.decision = "DENY"
         resp.final_reason = f"G5_{g5_out.reason}"
         resp.blocked_gate = "G5"
-        resp.latency_ms = int((time.perf_counter() - start) * 1000)
-        return resp
+        return _finalize(db, req, resp, start)
 
-    # 成功
-    resp.allowed = True
     resp.decision = "ALLOW"
     resp.final_reason = "OK"
     resp.result = g5_out.result
     resp.result_labels = g5_out.result_labels
-    resp.latency_ms = int((time.perf_counter() - start) * 1000)
-    return resp
+    return _finalize(db, req, resp, start)
