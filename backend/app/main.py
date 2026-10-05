@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,5 +38,18 @@ async def health():
         "version": settings.app_version,
         "model": settings.ollama_model,
     }
+
+
+# ---------- API 路由 ----------
 from app.api.chat import router as chat_router
+from app.api.audit import router as audit_router
+
 app.include_router(chat_router)
+app.include_router(audit_router)
+
+
+# ---------- 前端静态文件 ----------
+_FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
+
+if _FRONTEND_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")

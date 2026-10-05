@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>MCP-Guard · 审计</title>
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 0; background: #f5f5f7; }
+  .header { background: #1d1d1f; color: #fff; padding: 12px 20px; font-size: 16px; font-weight: 600; }
+  .nav a { color: #007aff; text-decoration: none; margin-left: 20px; font-size: 13px; }
+  .container { max-width: 1200px; margin: 20px auto; padding: 0 20px; }
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+  .card { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+  .card .label { font-size: 12px; color: #888; }
+  .card .value { font-size: 28px; font-weight: 600; margin-top: 8px; }
+  .table-wrap { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; }
+  th { font-weight: 600; color: #555; }
+  tr.deny { background: #fff5f5; }
+  tr.allow { background: #f5fff8; }
+  .reason { font-family: monospace; font-size: 12px; color: #c00; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+  .tag.DENY { background: #fdd; color: #900; }
+  .tag.ALLOW { background: #dfd; color: #060; }
+  .tag.REQUIRE_APPROVAL { background: #ffeaa0; color: #663c00; }
+</style>
+</head>
+<body>
+<div class="header">
+  MCP-Guard 审计
+  <span class="nav" style="float:right">
+    <a href="/chat.html">客服</a>
+    <a href="/redteam.html">红队</a>
+  </span>
+</div>
+<div class="container">
+  <div class="cards">
+    <div class="card"><div class="label">总事件</div><div class="value" id="c_total">-</div></div>
+    <div class="card"><div class="label">放行</div><div class="value" id="c_allow" style="color:#060">-</div></div>
+    <div class="card"><div class="label">拒绝</div><div class="value" id="c_deny" style="color:#c00">-</div></div>
+    <div class="card"><div class="label">拦截率</div><div class="value" id="c_rate">-</div></div>
+  </div>
+
+  <div class="table-wrap">
+    <h3 style="margin-top:0">最近审计事件</h3>
+    <table>
+      <thead>
+        <tr><th>ID</th><th>时间</th><th>会话</th><th>工具</th><th>决策</th><th>原因</th><th>风险分</th><th>延迟</th></tr>
+      </thead>
+      <tbody id="eventsBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+async function loadStats() {
+  const r = await fetch("/api/audit/stats");
+  const d = await r.json();
+  document.getElementById("c_total").textContent = d.total_events;
+  document.getElementById("c_allow").textContent = d.allow_count;
+  document.getElementById("c_deny").textContent = d.deny_count;
+  document.getElementById("c_rate").textContent = (d.block_rate * 100).toFixed(1) + "%";
+}
+
+async function loadEvents() {
+  const r = await fetch("/api/audit/events?limit=50");
+  const d = await r.json();
+  const tb = document.getElementById("eventsBody");
+  tb.innerHTML = "";
+  for (const ev of d.items) {
+    const tr = document.createElement("tr");
+    tr.className = ev.policy_action === "DENY" ? "deny" : "allow";
+    tr.innerHTML = `
+      <td>${ev.id}</td>
+      <td>${new Date(ev.timestamp).toLocaleTimeString()}</td>
+      <td>${ev.session_id || "-"}</td>
+      <td>${ev.tool_name || "-"}</td>
+      <td><span class="tag ${ev.policy_action}">${ev.policy_action}</span></td>
+      <td class="reason">${ev.policy_reason || ""}</td>
+      <td>${ev.risk_score != null ? ev.risk_score.toFixed(3) : "-"}</td>
+      <td>${ev.latency_ms || "-"} ms</td>
+    `;
+    tb.appendChild(tr);
+  }
+}
+
+loadStats();
+loadEvents();
+setInterval(() => { loadStats(); loadEvents(); }, 5000);
+</script>
+</body>
+</html>

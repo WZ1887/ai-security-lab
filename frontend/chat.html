@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>MCP-Guard · 客服</title>
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 0; background: #f5f5f7; }
+  .header { background: #1d1d1f; color: #fff; padding: 12px 20px; font-size: 16px; font-weight: 600; }
+  .header small { font-weight: 400; opacity: 0.6; margin-left: 12px; }
+  .container { max-width: 900px; margin: 20px auto; }
+  .chat-box { background: #fff; border-radius: 10px; padding: 16px; height: 500px; overflow-y: auto; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+  .msg { margin: 10px 0; display: flex; }
+  .msg.user { justify-content: flex-end; }
+  .bubble { max-width: 70%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+  .msg.user .bubble { background: #007aff; color: #fff; }
+  .msg.assistant .bubble { background: #e9e9eb; color: #1d1d1f; }
+  .msg.blocked .bubble { background: #ffe9e9; color: #c00; border: 1px solid #f5b3b3; }
+  .meta { font-size: 11px; color: #888; margin: 4px 0 0 4px; }
+  .input-row { display: flex; gap: 10px; margin-top: 16px; }
+  input[type=text] { flex: 1; padding: 12px 14px; border: 1px solid #ddd; border-radius: 10px; font-size: 14px; }
+  button { padding: 12px 24px; background: #007aff; color: #fff; border: 0; border-radius: 10px; font-size: 14px; cursor: pointer; }
+  button:disabled { opacity: 0.5; }
+  .nav a { color: #007aff; text-decoration: none; margin-left: 20px; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="header">
+  MCP-Guard 客服 <small>Agent → Gateway → MCP Server</small>
+  <span class="nav" style="float:right">
+    <a href="/admin.html">审计</a>
+    <a href="/redteam.html">红队</a>
+  </span>
+</div>
+<div class="container">
+  <div id="chatBox" class="chat-box"></div>
+  <div class="input-row">
+    <input id="userInput" type="text" placeholder="输入消息，例如：帮我查一下订单 #10023" />
+    <button id="sendBtn">发送</button>
+  </div>
+  <div class="meta" id="status"></div>
+</div>
+
+<script>
+const chatBox = document.getElementById("chatBox");
+const userInput = document.getElementById("userInput");
+const sendBtn = document.getElementById("sendBtn");
+const statusEl = document.getElementById("status");
+
+const SESSION_ID = "sess_" + Math.random().toString(36).slice(2, 8);
+
+function appendMsg(role, text, meta) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + role;
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.textContent = text;
+  wrap.appendChild(bubble);
+  if (meta) {
+    const m = document.createElement("div");
+    m.className = "meta";
+    m.textContent = meta;
+    wrap.appendChild(m);
+  }
+  chatBox.appendChild(wrap);
+  chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+async function send() {
+  const text = userInput.value.trim();
+  if (!text) return;
+  userInput.value = "";
+  sendBtn.disabled = true;
+  appendMsg("user", text);
+
+  const thinking = document.createElement("div");
+  thinking.className = "msg assistant";
+  thinking.innerHTML = '<div class="bubble">…</div>';
+  chatBox.appendChild(thinking);
+  chatBox.scrollTop = chatBox.scrollHeight;
+
+  try {
+    const r = await fetch("/api/chat", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        session_id: SESSION_ID,
+        user_id: "user_001",
+        tenant_id: "tenant_001",
+        roles: ["cs_agent"],
+        agent_id: "cs_agent_01",
+        user_input: text,
+      }),
+    });
+    const data = await r.json();
+    chatBox.removeChild(thinking);
+
+    let metaLine = `tool=${data.tool_name || "-"}  latency=${data.latency_ms}ms`;
+    if (data.blocked) {
+      metaLine += `  gate=${data.blocked_gate}  reason=${data.blocked_reason}`;
+      appendMsg("blocked", data.reply, metaLine);
+    } else {
+      appendMsg("assistant", data.reply, metaLine);
+    }
+  } catch (e) {
+    chatBox.removeChild(thinking);
+    appendMsg("blocked", "请求失败：" + e.message);
+  } finally {
+    sendBtn.disabled = false;
+    statusEl.textContent = "session_id = " + SESSION_ID;
+  }
+}
+
+sendBtn.addEventListener("click", send);
+userInput.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+</script>
+</body>
+</html>
