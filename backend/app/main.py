@@ -35,3 +35,5 @@ async def health():
         "version": settings.app_version,
         "model": settings.ollama_model,
     }
+from app.api.chat import router as chat_router
+app.include_router(chat_router)
