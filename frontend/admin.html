@@ -41,6 +41,15 @@
     <div class="card"><div class="label">拦截率</div><div class="value" id="c_rate">-</div></div>
   </div>
 
+  <div class="table-wrap" style="margin-bottom:16px; display:flex; align-items:center; gap:12px;">
+    <input id="emailInput" type="text" value="manager01@example.com" placeholder="邮箱" style="padding:8px; border:1px solid #ddd; border-radius:6px;" />
+    <input id="passwordInput" type="password" value="Demo1234!" placeholder="口令" style="padding:8px; border:1px solid #ddd; border-radius:6px;" />
+    <button id="loginBtn" style="padding:8px 16px; cursor:pointer;">登录</button>
+    <button id="verifyBtn" style="padding:8px 16px; cursor:pointer;">校验审计哈希链</button>
+    <span id="verifyResult" class="reason"></span>
+    <span id="whoami" class="reason" style="color:#555;"></span>
+  </div>
+
   <div class="table-wrap">
     <h3 style="margin-top:0">最近审计事件</h3>
     <table>
@@ -53,8 +62,46 @@
 </div>
 
 <script>
+let ACCESS_TOKEN = null;
+
+// 审计接口需要认证：默认用 manager01（含 auditor 角色）登录
+async function ensureToken() {
+  if (ACCESS_TOKEN) return ACCESS_TOKEN;
+  const r = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      email: document.getElementById("emailInput").value.trim(),
+      password: document.getElementById("passwordInput").value,
+    }),
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.detail || "登录失败");
+  ACCESS_TOKEN = d.access_token;
+  const p = d.principal;
+  document.getElementById("whoami").textContent =
+    `已登录 ${p.user_id}（角色 ${p.roles.join(",")}，租户 ${p.tenant_id}）`;
+  return ACCESS_TOKEN;
+}
+
+document.getElementById("loginBtn").addEventListener("click", async () => {
+  ACCESS_TOKEN = null;
+  try {
+    await ensureToken();
+    await loadStats();
+    await loadEvents();
+  } catch (e) {
+    document.getElementById("whoami").textContent = "登录失败：" + e.message;
+  }
+});
+
+async function authFetch(url) {
+  const token = await ensureToken();
+  return fetch(url, {headers: {"Authorization": "Bearer " + token}});
+}
+
 async function loadStats() {
-  const r = await fetch("/api/audit/stats");
+  const r = await authFetch("/api/audit/stats");
   const d = await r.json();
   document.getElementById("c_total").textContent = d.total_events;
   document.getElementById("c_allow").textContent = d.allow_count;
@@ -63,7 +110,7 @@ async function loadStats() {
 }
 
 async function loadEvents() {
-  const r = await fetch("/api/audit/events?limit=50");
+  const r = await authFetch("/api/audit/events?limit=50");
   const d = await r.json();
   const tb = document.getElementById("eventsBody");
   tb.innerHTML = "";
@@ -83,6 +130,26 @@ async function loadEvents() {
     tb.appendChild(tr);
   }
 }
+
+async function verifyChain() {
+  const el = document.getElementById("verifyResult");
+  el.textContent = "校验中…";
+  try {
+    const r = await authFetch("/api/audit/verify");
+    const d = await r.json();
+    if (!r.ok) {
+      el.textContent = "失败：" + (d.detail || r.status);
+      return;
+    }
+    el.textContent = d.valid
+      ? `链完整：已校验 ${d.checked} 条事件`
+      : `链断裂：id=${d.broken_at.id} reason=${d.broken_at.reason}`;
+  } catch (e) {
+    el.textContent = "请求失败：" + e.message;
+  }
+}
+
+document.getElementById("verifyBtn").addEventListener("click", verifyChain);
 
 loadStats();
 loadEvents();

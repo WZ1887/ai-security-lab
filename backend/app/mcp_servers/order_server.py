@@ -5,12 +5,14 @@
 """
 
 from app.mcp_servers.base import BaseMCPServer, ToolSpec
+from app.mcp_servers.context import CallContext
 
 
 _ORDERS: dict[str, dict] = {
     "10023": {
         "order_id": "10023",
         "user_id": "user_001",
+        "tenant_id": "tenant_001",
         "status": "shipped",
         "amount": 199.0,
         "phone": "13812345678",
@@ -19,6 +21,7 @@ _ORDERS: dict[str, dict] = {
     "10024": {
         "order_id": "10024",
         "user_id": "user_002",
+        "tenant_id": "tenant_002",
         "status": "pending",
         "amount": 88.0,
         "phone": "13987654321",
@@ -27,10 +30,18 @@ _ORDERS: dict[str, dict] = {
 }
 
 
-def _get_order(args: dict) -> dict:
+def _owned_by(order: dict, ctx: CallContext) -> bool:
+    """资源归属校验：调用者必须同时匹配 user 与 tenant。"""
+    if not ctx.identified:
+        return False
+    return order.get("user_id") == ctx.user_id and order.get("tenant_id") == ctx.tenant_id
+
+
+def _get_order(args: dict, ctx: CallContext) -> dict:
     oid = str(args.get("order_id", ""))
     order = _ORDERS.get(oid)
-    if order is None:
+    # 越权访问与“订单不存在”返回同样的结果：不泄露“存在但不属于你”
+    if order is None or not _owned_by(order, ctx):
         return {"error": "order_not_found", "order_id": oid}
     return order
 
@@ -46,6 +57,11 @@ class OrderServer(BaseMCPServer):
                 description="Get order details by order id",
                 input_schema={"order_id": "str"},
                 capability="read:order",
+                output_schema={
+                    "order_id": "str",
+                    "status": "str",
+                    "amount": "float",
+                },
                 output_labels=["PII", "ORDER_DATA"],
                 risk_level="low",
                 handler=_get_order,

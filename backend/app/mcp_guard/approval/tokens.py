@@ -15,8 +15,10 @@ import time
 import uuid
 from dataclasses import dataclass
 
+from app.config import settings
 
-SECRET = b"mcp-guard-approval-secret-change-in-prod"
+
+SECRET = settings.approval_token_secret.encode("utf-8")
 
 
 @dataclass
@@ -71,7 +73,12 @@ def issue(
     return f"{payload_hex}.{sig}"
 
 
-def verify(token: str, expected_action: str, requester_id: str) -> TokenVerifyResult:
+def verify(
+    token: str,
+    expected_action: str,
+    requester_id: str,
+    expected_session_id: str | None = None,
+) -> TokenVerifyResult:
     if not token or "." not in token:
         return TokenVerifyResult(False, "MALFORMED_TOKEN")
 
@@ -97,4 +104,14 @@ def verify(token: str, expected_action: str, requester_id: str) -> TokenVerifyRe
     if payload.get("requested_by") != requester_id:
         return TokenVerifyResult(False, "REQUESTER_MISMATCH")
 
+    # 令牌与会话绑定：A 会话签发的令牌不能拿到 B 会话复用
+    if expected_session_id is not None and payload.get("session_id") != expected_session_id:
+        return TokenVerifyResult(False, "SESSION_MISMATCH")
+
     return TokenVerifyResult(True, "OK", payload)
+
+
+def decode_payload(token: str) -> dict:
+    """取出 payload，不做签名校验（仅供签发方自己解析 jti / expires_at）。"""
+    payload_hex, _, _ = token.rpartition(".")
+    return json.loads(bytes.fromhex(payload_hex).decode("utf-8"))

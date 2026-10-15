@@ -5,12 +5,14 @@
 """
 
 from app.mcp_servers.base import BaseMCPServer, ToolSpec
+from app.mcp_servers.context import CallContext
 
 
 _SENT: list[dict] = []
 
 
-def _send_email(args: dict) -> dict:
+def _send_email(args: dict, ctx: CallContext) -> dict:
+    # ctx 仅用于保持统一签名；收件人的合法性由 G4 数据流策略约束
     to = str(args.get("to", "")).strip()
     subject = str(args.get("subject", "")).strip()
     body = str(args.get("body", ""))
@@ -38,6 +40,7 @@ class EmailServer(BaseMCPServer):
                 description="Send email to a recipient",
                 input_schema={"to": "str", "subject": "str", "body": "str"},
                 capability="write:email:external",
+                output_schema={"status": "str"},
                 output_labels=["EXTERNAL"],
                 risk_level="medium",
                 handler=_send_email,

@@ -5,12 +5,14 @@
 """
 
 from app.mcp_servers.base import BaseMCPServer, ToolSpec
+from app.mcp_servers.context import CallContext
 
 
 _TRANSFERS: list[dict] = []
 
 
-def _transfer_funds(args: dict) -> dict:
+def _transfer_funds(args: dict, ctx: CallContext) -> dict:
+    # ctx 仅用于保持统一签名；转账的审批门槛由 G4/G5 强制
     to = str(args.get("to", "")).strip()
     amount = float(args.get("amount", 0))
 
@@ -39,6 +41,7 @@ class FinanceServer(BaseMCPServer):
                 description="Transfer funds between accounts",
                 input_schema={"to": "str", "amount": "float"},
                 capability="write:funds",
+                output_schema={"status": "str"},
                 output_labels=["FINANCIAL"],
                 risk_level="high",
                 handler=_transfer_funds,

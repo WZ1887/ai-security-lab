@@ -8,7 +8,7 @@ from alembic import context
 # 让 Python 能找到 app 包
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from app.main import settings
+from app.config import settings
 from app.models.base import Base
 from app.models import user, tool_registry, policy_rule, audit_event, approval  # noqa: F401
 

@@ -25,5 +25,18 @@ Thumbs.db
 *.sqlite3
 
 # Temp scripts
-test_*.py
+/tmp_*.py
+/scratch_*.py
+
+# Guard sandbox root (G5)
+sandbox_root/
+
+# Local caches
 .cache/
+
+# 评测本地产物（正式报告在 docs/eval-report.md）
+backend/eval-report.json
+backend/eval-report.md
+
+# labs 实验产物（向量库 / 缓存）
+labs/**/chroma_db/

@@ -32,6 +32,12 @@
   </span>
 </div>
 <div class="container">
+  <div class="input-row" style="margin-bottom:12px;">
+    <input id="emailInput" type="text" value="cs01@example.com" placeholder="邮箱" />
+    <input id="passwordInput" type="password" value="Demo1234!" placeholder="口令" />
+    <button id="loginBtn">登录</button>
+    <button id="registerBtn">注册</button>
+  </div>
   <div id="chatBox" class="chat-box"></div>
   <div class="input-row">
     <input id="userInput" type="text" placeholder="输入消息，例如：帮我查一下订单 #10023" />
@@ -47,6 +53,91 @@ const sendBtn = document.getElementById("sendBtn");
 const statusEl = document.getElementById("status");
 
 const SESSION_ID = "sess_" + Math.random().toString(36).slice(2, 8);
+let ACCESS_TOKEN = null;
+let STATUS_PREFIX = "未登录";
+
+// 身份来自登录接口；访问令牌只留在内存里，不写 localStorage
+async function ensureToken() {
+  if (ACCESS_TOKEN) return ACCESS_TOKEN;
+  const r = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      email: document.getElementById("emailInput").value.trim(),
+      password: document.getElementById("passwordInput").value,
+    }),
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.detail || "登录失败");
+  ACCESS_TOKEN = d.access_token;
+  const p = d.principal;
+  STATUS_PREFIX =
+    `已登录 ${p.user_id}（角色 ${p.roles.join(",")}）` +
+    (p.on_behalf_of ? `，代客户 ${p.on_behalf_of}` : "");
+  return ACCESS_TOKEN;
+}
+
+document.getElementById("loginBtn").addEventListener("click", async () => {
+  ACCESS_TOKEN = null;
+  try {
+    await ensureToken();
+    statusEl.textContent = STATUS_PREFIX + `  |  session_id=${SESSION_ID}`;
+    appendMsg("assistant", "登录成功：" + STATUS_PREFIX);
+  } catch (e) {
+    appendMsg("blocked", "登录失败：" + e.message);
+  }
+});
+
+// 自注册：只能拿到最低权限（customer），特权角色必须由管理员授予。
+// dev 环境注册接口会回显邮箱验证令牌，这里自动完成验证并登录。
+document.getElementById("registerBtn").addEventListener("click", async () => {
+  const email = document.getElementById("emailInput").value.trim();
+  const password = document.getElementById("passwordInput").value;
+  const post = async (url, payload) => {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+    return {ok: r.ok, data: await r.json()};
+  };
+
+  try {
+    const reg = await post("/api/auth/register", {email, password});
+    if (!reg.ok) {
+      appendMsg("blocked", "注册失败：" + (reg.data.detail || "未知错误"));
+      return;
+    }
+    appendMsg("assistant", "注册请求已受理（" + reg.data.status + "）。");
+
+    if (!reg.data.verification_token) {
+      appendMsg("assistant", reg.data.detail || "请按邮件提示完成验证。");
+      return;
+    }
+
+    const verified = await post("/api/auth/verify-email", {
+      token: reg.data.verification_token,
+    });
+    if (!verified.ok) {
+      appendMsg("blocked", "邮箱验证失败：" + (verified.data.detail || "未知错误"));
+      return;
+    }
+
+    ACCESS_TOKEN = verified.data.access_token;
+    const p = verified.data.principal;
+    STATUS_PREFIX =
+      `已登录 ${p.user_id}（角色 ${p.roles.join(",")}）` +
+      (p.on_behalf_of ? `，代客户 ${p.on_behalf_of}` : "");
+    statusEl.textContent = STATUS_PREFIX + `  |  session_id=${SESSION_ID}`;
+    appendMsg(
+      "assistant",
+      "邮箱验证完成，已登录。新账号默认只有 customer 角色，工具调用会被 RBAC 拒绝；" +
+        "需要管理员通过 /api/auth/users 授予角色后才能操作。"
+    );
+  } catch (e) {
+    appendMsg("blocked", "注册失败：" + e.message);
+  }
+});
 
 function appendMsg(role, text, meta) {
   const wrap = document.createElement("div");
@@ -79,15 +170,15 @@ async function send() {
   chatBox.scrollTop = chatBox.scrollHeight;
 
   try {
+    const token = await ensureToken();
     const r = await fetch("/api/chat", {
       method: "POST",
-      headers: {"Content-Type": "application/json"},
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + token,
+      },
       body: JSON.stringify({
         session_id: SESSION_ID,
-        user_id: "user_001",
-        tenant_id: "tenant_001",
-        roles: ["cs_agent"],
-        agent_id: "cs_agent_01",
         user_input: text,
       }),
     });
@@ -95,6 +186,9 @@ async function send() {
     chatBox.removeChild(thinking);
 
     let metaLine = `tool=${data.tool_name || "-"}  latency=${data.latency_ms}ms`;
+    if (data.approval_required) {
+      metaLine += `  approval_id=${data.approval_id}`;
+    }
     if (data.blocked) {
       metaLine += `  gate=${data.blocked_gate}  reason=${data.blocked_reason}`;
       appendMsg("blocked", data.reply, metaLine);
@@ -106,7 +200,7 @@ async function send() {
     appendMsg("blocked", "请求失败：" + e.message);
   } finally {
     sendBtn.disabled = false;
-    statusEl.textContent = "session_id = " + SESSION_ID;
+    statusEl.textContent = STATUS_PREFIX + `  |  session_id=${SESSION_ID}`;
   }
 }
 

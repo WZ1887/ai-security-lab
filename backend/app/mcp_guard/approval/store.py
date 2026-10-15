@@ -1,72 +1,36 @@
-"""审批记录存储：内存 + jti 防重放。
+"""审批令牌 jti 防重放缓存。
 
-为了跑通 MVP，先用内存存储。
-后续可替换为 approvals 表 + Redis。
+MVP：进程内存 + TTL 懒清理，重启即失效。
+多实例部署时应换成 Redis，或依赖 approvals.approval_token_jti 的唯一约束
+（DB 版的审批记录在 approval/service.py）。
 """
 
 import time
-from dataclasses import dataclass, field
+
+_DEFAULT_TTL_SECONDS = 3600
+
+_used: dict[str, float] = {}
 
 
-@dataclass
-class ApprovalRecord:
-    approval_id: str
-    session_id: str
-    action: str
-    requested_by: str
-    action_payload: dict
-    status: str = "pending"
-    approver_id: str | None = None
-    token_jti: str | None = None
-    created_at: float = field(default_factory=time.time)
-
-
-_records: dict[str, ApprovalRecord] = {}
-_used_jti: set[str] = set()
-
-
-def create(
-    approval_id: str,
-    session_id: str,
-    action: str,
-    requested_by: str,
-    action_payload: dict,
-) -> ApprovalRecord:
-    rec = ApprovalRecord(
-        approval_id=approval_id,
-        session_id=session_id,
-        action=action,
-        requested_by=requested_by,
-        action_payload=action_payload,
-    )
-    _records[approval_id] = rec
-    return rec
-
-
-def get(approval_id: str) -> ApprovalRecord | None:
-    return _records.get(approval_id)
-
-
-def approve(approval_id: str, approver_id: str, jti: str) -> ApprovalRecord | None:
-    rec = _records.get(approval_id)
-    if rec is None:
-        return None
-    if rec.status != "pending":
-        return rec
-    rec.status = "approved"
-    rec.approver_id = approver_id
-    rec.token_jti = jti
-    return rec
+def _prune(now: float) -> None:
+    for jti in [k for k, expires_at in _used.items() if expires_at <= now]:
+        _used.pop(jti, None)
 
 
 def is_jti_used(jti: str) -> bool:
-    return jti in _used_jti
+    """令牌是否已被使用（顺带清理过期条目）。"""
+    if not jti:
+        return False
+    _prune(time.time())
+    return jti in _used
 
 
-def mark_jti_used(jti: str) -> None:
-    _used_jti.add(jti)
+def mark_jti_used(jti: str, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> None:
+    """标记令牌已使用，ttl_seconds 后自动过期。"""
+    if not jti:
+        return
+    _used[jti] = time.time() + ttl_seconds
 
 
 def reset_for_test() -> None:
-    _records.clear()
-    _used_jti.clear()
+    _used.clear()

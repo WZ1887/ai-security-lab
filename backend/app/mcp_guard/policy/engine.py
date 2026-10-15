@@ -10,6 +10,7 @@ from app.mcp_guard.policy.rules import (
     MEDIUM_RISK_TOOLS,
     role_allows_tool,
 )
+from app.memory import guard as memory_guard
 
 
 SEMANTIC_APPROVAL_THRESHOLD = 0.85
@@ -46,8 +47,12 @@ class PolicyInput:
     data_labels_in: list[str]
     requested_action: str
     resource: dict = field(default_factory=dict)
+    # 工具参数（G4 目前用它做记忆写入检查；ABAC 以后也用得上）
+    tool_arguments: dict = field(default_factory=dict)
     semantic_risk: float = 0.0
     semantic_action: str = "ALLOW"
+    # G2 降级（嵌入服务不可用）→ 分数不可信
+    semantic_degraded: bool = False
 
 
 @dataclass
@@ -96,6 +101,11 @@ def evaluate(inp: PolicyInput) -> PolicyOutput:
             "DENY", df.reason, df.rule_id, inp.output_labels, start
         )
 
+    # ---------- 3b. 记忆写入：只能存事实 ----------
+    memory_verdict = memory_guard.check_tool_call(inp.tool_name, inp.tool_arguments)
+    if memory_verdict is not None and not memory_verdict.allowed:
+        return _finalize("DENY", memory_verdict.reason, "MEM-001", [], start)
+
     # ---------- 4. 风险信号合并 ----------
     force_approval = False
     reason = "OK"
@@ -120,6 +130,15 @@ def evaluate(inp: PolicyInput) -> PolicyOutput:
             if reason == "OK":
                 reason = "SEMANTIC_RISK_ELEVATED"
                 policy_id = "POL-201"
+
+    # 语义服务降级 + 中高风险工具 → 审批：
+    # 检测能力不可用时不能让高风险操作直接过（fail-closed）
+    if inp.semantic_degraded:
+        if inp.tool_risk_level in ("medium", "high") or inp.tool_name in MEDIUM_RISK_TOOLS:
+            force_approval = True
+            if reason == "OK":
+                reason = "SEMANTIC_UNAVAILABLE"
+                policy_id = "POL-202"
 
     if force_approval:
         return _finalize(

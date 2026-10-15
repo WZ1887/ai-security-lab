@@ -22,6 +22,7 @@ TOOL_SINK: dict[str, str] = {
     "search_knowledge": SINK_INTERNAL,
     "send_email": SINK_EXTERNAL,
     "transfer_funds": SINK_EXTERNAL,
+    "save_memory": SINK_INTERNAL,
     "read_file": SINK_INTERNAL,
 }
 

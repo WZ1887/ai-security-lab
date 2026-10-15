@@ -15,10 +15,12 @@ from sqlalchemy.orm import Session
 
 from app.mcp_guard.canonicalize.g1 import (
     CanonicalizeInput,
+    CanonicalizeOutput,
     canonicalize,
 )
 from app.mcp_guard.semantic.g2 import (
     SemanticInput,
+    SemanticOutput,
     analyze as semantic_analyze,
 )
 from app.mcp_guard.registry.g3 import (
@@ -37,6 +39,7 @@ from app.mcp_guard.g5 import (
     run as execution_run,
 )
 from app.mcp_guard.audit.logger import write_event as audit_write
+from app.mcp_servers.context import CallContext
 
 
 @dataclass
@@ -54,8 +57,10 @@ class GatewayRequest:
 
     # 工具调用意图
     server_id: str = ""
+    server_fingerprint: str = ""
     tool_name: str = ""
     tool_version: str = ""
+    tool_input_schema: dict = field(default_factory=dict)
     tool_arguments: dict = field(default_factory=dict)
     tool_hashes: dict = field(default_factory=dict)
 
@@ -91,6 +96,18 @@ class GatewayResponse:
     event_id: str = ""
     audit_id: int | None = None
     latency_ms: int = 0
+
+
+@dataclass
+class PrecomputedGates:
+    """调用方已经算过的 G1/G2。
+
+    同一请求里 G1/G2 只应该算一次：chat 为了给出响应里的风险信息会先算，
+    把它传进来即可，避免重复做嵌入（一次语义分析 = 一次模型调用）。
+    """
+
+    g1: CanonicalizeOutput | None = None
+    g2: SemanticOutput | None = None
 
 
 def _sha256(obj) -> str:
@@ -147,7 +164,11 @@ def _finalize(
     return resp
 
 
-def handle_tool_call(db: Session, req: GatewayRequest) -> GatewayResponse:
+def handle_tool_call(
+    db: Session,
+    req: GatewayRequest,
+    precomputed: PrecomputedGates | None = None,
+) -> GatewayResponse:
     start = time.perf_counter()
 
     resp = GatewayResponse(
@@ -158,11 +179,16 @@ def handle_tool_call(db: Session, req: GatewayRequest) -> GatewayResponse:
     )
 
     # ---------- G1 Canonicalization ----------
-    g1_out = canonicalize(CanonicalizeInput(raw_text=req.user_input, source="user"))
+    g1_out = (
+        precomputed.g1
+        if precomputed and precomputed.g1
+        else canonicalize(CanonicalizeInput(raw_text=req.user_input, source="user"))
+    )
     resp.g1 = {
         "transformations": g1_out.transformations,
         "risk_signals": g1_out.risk_signals,
         "truncated": g1_out.truncated,
+        "expansion_ratio": g1_out.expansion_ratio,
         "elapsed_ms": g1_out.elapsed_ms,
     }
 
@@ -173,11 +199,15 @@ def handle_tool_call(db: Session, req: GatewayRequest) -> GatewayResponse:
         return _finalize(db, req, resp, start)
 
     # ---------- G2 Semantic Risk ----------
-    g2_out = semantic_analyze(
-        SemanticInput(
-            normalized_text=g1_out.normalized_text,
-            source="user",
-            context_window=[],
+    g2_out = (
+        precomputed.g2
+        if precomputed and precomputed.g2
+        else semantic_analyze(
+            SemanticInput(
+                normalized_text=g1_out.normalized_text,
+                source="user",
+                context_window=[],
+            )
         )
     )
     resp.g2 = {
@@ -186,6 +216,7 @@ def handle_tool_call(db: Session, req: GatewayRequest) -> GatewayResponse:
         "action": g2_out.action,
         "benign_score": g2_out.benign_score,
         "margin": g2_out.margin,
+        "degraded": g2_out.degraded,
         "elapsed_ms": g2_out.elapsed_ms,
     }
 
@@ -200,11 +231,14 @@ def handle_tool_call(db: Session, req: GatewayRequest) -> GatewayResponse:
         db,
         ToolCallInput(
             server_id=req.server_id,
+            server_fingerprint=req.server_fingerprint,
             tool_name=req.tool_name,
             tool_version=req.tool_version,
+            input_schema=req.tool_input_schema,
             input_schema_hash=req.tool_hashes.get("input_schema_hash", ""),
             description_hash=req.tool_hashes.get("description_hash", ""),
             capability_hash=req.tool_hashes.get("capability_hash", ""),
+            output_schema_hash=req.tool_hashes.get("output_schema_hash", ""),
             arguments=req.tool_arguments,
             session_token=None,
         ),
@@ -241,8 +275,10 @@ def handle_tool_call(db: Session, req: GatewayRequest) -> GatewayResponse:
             output_labels=g3_out.output_labels,
             data_labels_in=req.data_labels_in,
             requested_action="CALL",
+            tool_arguments=req.tool_arguments,
             semantic_risk=g2_out.risk_score,
             semantic_action=g2_out.action,
+            semantic_degraded=g2_out.degraded,
         )
     )
     resp.g4 = {
@@ -265,12 +301,21 @@ def handle_tool_call(db: Session, req: GatewayRequest) -> GatewayResponse:
         ExecutionInput(
             session_id=req.session_id,
             tool_name=req.tool_name,
-            tool_arguments=req.tool_arguments,
+            # 用 G3 校验/规范化之后的参数执行，避免绕过 schema 校验
+            tool_arguments=g3_out.validated_args,
             requested_by=req.agent_id,
             policy_decision=g4_out.decision,
             policy_reason=g4_out.reason,
             approval_token=req.approval_token,
             executor=req.executor,
+            output_labels=g3_out.output_labels,
+            context=CallContext(
+                user_id=req.user_id,
+                tenant_id=req.tenant_id,
+                agent_id=req.agent_id,
+                session_id=req.session_id,
+                roles=tuple(req.roles),
+            ),
         )
     )
     resp.g5 = {
@@ -278,6 +323,7 @@ def handle_tool_call(db: Session, req: GatewayRequest) -> GatewayResponse:
         "reason": g5_out.reason,
         "result_labels": g5_out.result_labels,
         "result_risk": g5_out.result_risk,
+        "result_transformations": g5_out.result_transformations,
         "approval_verified": g5_out.approval_verified,
         "elapsed_ms": g5_out.elapsed_ms,
     }

@@ -3,12 +3,19 @@
 不直接实现完整 MCP 协议，用 Python 类模拟。
 每个 Server：
   - 声明 tools 列表（含 name / description / input_schema）
-  - 提供 call_tool(name, arguments) -> dict
+  - 提供 call_tool(name, arguments, context) -> dict
+工具执行必须拿到调用者上下文（CallContext），归属类校验在工具内部完成。
 后续可替换为真正的 MCP Python SDK。
 """
 
 from dataclasses import dataclass, field
 from typing import Callable
+
+from app.mcp_servers.context import CallContext
+
+
+# handler 接收 (arguments, context)，context 里的身份来自认证令牌
+Handler = Callable[[dict, CallContext], dict]
 
 
 @dataclass
@@ -17,9 +24,11 @@ class ToolSpec:
     description: str
     input_schema: dict
     capability: str
+    output_schema: dict = field(default_factory=dict)
     output_labels: list[str] = field(default_factory=list)
     risk_level: str = "low"
-    handler: Callable[[dict], dict] | None = None
+    version: str = "1.0.0"
+    handler: Handler | None = None
 
 
 class BaseMCPServer:
@@ -42,13 +51,18 @@ class BaseMCPServer:
     def get_tool(self, name: str) -> ToolSpec | None:
         return self._tools.get(name)
 
-    def call_tool(self, name: str, arguments: dict) -> dict:
+    def call_tool(
+        self,
+        name: str,
+        arguments: dict,
+        context: CallContext | None = None,
+    ) -> dict:
         spec = self._tools.get(name)
         if spec is None:
             return {"error": f"tool_not_found:{name}"}
         if spec.handler is None:
             return {"error": f"tool_has_no_handler:{name}"}
         try:
-            return spec.handler(arguments)
+            return spec.handler(arguments, context or CallContext())
         except Exception as e:
             return {"error": f"{type(e).__name__}:{e}"}

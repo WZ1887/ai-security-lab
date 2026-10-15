@@ -3,6 +3,7 @@
 只产出风险信号，不做最终判定。
 """
 
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Literal
@@ -30,6 +31,8 @@ class SemanticOutput:
     benign_score: float
     margin: float
     elapsed_ms: int
+    # 嵌入服务不可用 → True：分数不可信，由策略层按 fail-closed 处置
+    degraded: bool = False
 
 
 # 阈值
@@ -40,16 +43,21 @@ MARGIN_MIN = 0.05           # 恶意分至少要比良性分高这么多，才�
 
 _anchor_vecs: dict[str, list[tuple[str, list[float]]]] = {}
 _benign_vecs: list[tuple[str, list[float]]] = []
+_anchor_lock = threading.Lock()
 
 
 def _load_anchors() -> None:
     if _anchor_vecs and _benign_vecs:
         return
-    for category, examples in ANCHORS.items():
-        _anchor_vecs[category] = [(ex, embed(ex)) for ex in examples]
-    _benign_vecs.clear()
-    for ex in BENIGN_ANCHORS:
-        _benign_vecs.append((ex, embed(ex)))
+    # 双重检查：并发首请求只嵌入一次（同步接口跑在线程池里，真会并发）
+    with _anchor_lock:
+        if _anchor_vecs and _benign_vecs:
+            return
+        for category, examples in ANCHORS.items():
+            _anchor_vecs[category] = [(ex, embed(ex)) for ex in examples]
+        _benign_vecs.clear()
+        for ex in BENIGN_ANCHORS:
+            _benign_vecs.append((ex, embed(ex)))
 
 
 def _max_sim_per_category(text_vec: list[float]) -> dict[str, float]:
@@ -89,12 +97,40 @@ def _decide(malicious_top: float, margin: float) -> RiskAction:
 def analyze(inp: SemanticInput) -> SemanticOutput:
     start = time.perf_counter()
 
-    _load_anchors()
-
     # 分片拼接
     merged = "\n".join(inp.context_window + [inp.normalized_text])
 
-    text_vec = embed(merged)
+    # 空输入不需要嵌入，直接给最低风险
+    if not merged.strip():
+        return SemanticOutput(
+            risk_score=0.0,
+            signals=[],
+            action="ALLOW",
+            anchor_scores={},
+            benign_score=0.0,
+            margin=0.0,
+            elapsed_ms=int((time.perf_counter() - start) * 1000),
+        )
+
+    try:
+        _load_anchors()
+        text_vec = embed(merged)
+    except Exception:
+        # 嵌入服务不可用：不假装“低风险”，标记 degraded 交给策略层。
+        # 低风险工具仍放行（与 docs 的 risk_score=0.0 + REVIEW 一致），
+        # 中高风险工具由 G4 抬高到人工审批。
+        return SemanticOutput(
+            risk_score=0.0,
+            signals=["embed_unavailable"],
+            action="REVIEW",
+            anchor_scores={},
+            benign_score=0.0,
+            margin=0.0,
+            elapsed_ms=int((time.perf_counter() - start) * 1000),
+            degraded=True,
+        )
+
+    anchor_scores = _max_sim_per_category(text_vec)
     anchor_scores = _max_sim_per_category(text_vec)
     benign_score = _max_benign_sim(text_vec)
 

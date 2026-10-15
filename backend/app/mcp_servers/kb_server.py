@@ -5,6 +5,7 @@
 """
 
 from app.mcp_servers.base import BaseMCPServer, ToolSpec
+from app.mcp_servers.context import CallContext
 
 
 _KB_NORMAL: list[dict] = [
@@ -37,7 +38,8 @@ _KB_EVIL: list[dict] = [
 ]
 
 
-def _search_knowledge(args: dict) -> dict:
+def _search_knowledge(args: dict, ctx: CallContext) -> dict:
+    # 知识库是公开资料，不做归属校验（ctx 仅用于保持统一签名）
     query = str(args.get("query", "")).strip()
     include_evil = bool(args.get("include_evil", False))
 
@@ -68,6 +70,7 @@ class KnowledgeServer(BaseMCPServer):
                 description="Search knowledge base",
                 input_schema={"query": "str", "include_evil": "bool"},
                 capability="read:kb",
+                output_schema={"results": "list"},
                 output_labels=["INTERNAL"],
                 risk_level="low",
                 handler=_search_knowledge,

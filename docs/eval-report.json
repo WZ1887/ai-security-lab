@@ -1,0 +1,123 @@
+{
+  "meta": {
+    "生成时间": "2026-10-15 08:42:56Z",
+    "语义模式": "offline（实际 offline）",
+    "样本目录": "eval\\datasets",
+    "Python": "3.13.9",
+    "平台": "Windows-11-10.0.26200-SP0"
+  },
+  "summary": {
+    "total_samples": 167,
+    "counted_samples": 162,
+    "skipped_samples": 5,
+    "attacks": 106,
+    "benign": 56,
+    "tp": 106,
+    "fn": 0,
+    "tn": 56,
+    "fp": 0,
+    "recall": 1.0,
+    "precision": 1.0,
+    "fpr": 0.0,
+    "per_family": {
+      "A1_tool_poisoning": {
+        "total": 12,
+        "pass": 12,
+        "fail": 0
+      },
+      "A2_indirect_injection": {
+        "total": 12,
+        "pass": 12,
+        "fail": 0
+      },
+      "A3_result_injection": {
+        "total": 10,
+        "pass": 10,
+        "fail": 0
+      },
+      "A4_pii_exfiltration": {
+        "total": 14,
+        "pass": 14,
+        "fail": 0
+      },
+      "A5_obfuscation": {
+        "total": 19,
+        "pass": 19,
+        "fail": 0
+      },
+      "A6_memory_poisoning": {
+        "total": 15,
+        "pass": 15,
+        "fail": 0
+      },
+      "P7_fake_server": {
+        "total": 6,
+        "pass": 6,
+        "fail": 0
+      },
+      "RBAC": {
+        "total": 11,
+        "pass": 11,
+        "fail": 0
+      },
+      "arg_smuggling": {
+        "total": 8,
+        "pass": 8,
+        "fail": 0
+      },
+      "benign_customer": {
+        "total": 24,
+        "pass": 24,
+        "fail": 0
+      },
+      "benign_hard_negative": {
+        "total": 10,
+        "pass": 10,
+        "fail": 0
+      },
+      "benign_memory": {
+        "total": 7,
+        "pass": 7,
+        "fail": 0
+      },
+      "ownership": {
+        "total": 8,
+        "pass": 8,
+        "fail": 0
+      },
+      "registry_integrity": {
+        "total": 5,
+        "pass": 5,
+        "fail": 0
+      },
+      "schema_coercion": {
+        "total": 1,
+        "pass": 1,
+        "fail": 0
+      }
+    },
+    "failures": [],
+    "gate_hits": {
+      "G5": 34,
+      "G3": 31,
+      "G4": 34,
+      "-": 7
+    },
+    "gate_latency_p95": {
+      "g1": 0.0,
+      "g2": 0.0,
+      "g3": 2.0,
+      "g4": 0.0,
+      "g5": 6.0
+    },
+    "gate_latency_p50": {
+      "g1": 0.0,
+      "g2": 0.0,
+      "g3": 0.0,
+      "g4": 0.0,
+      "g5": 0.0
+    },
+    "total_latency_p50": 8.0,
+    "total_latency_p95": 16.0
+  }
+}

@@ -18,6 +18,7 @@ from app.mcp_guard.sandbox.executor import (
     SandboxInput,
     execute as sandbox_execute,
 )
+from app.mcp_servers.context import CallContext
 
 
 @dataclass
@@ -29,7 +30,10 @@ class ExecutionInput:
     policy_decision: str            # ALLOW / DENY / REQUIRE_APPROVAL
     policy_reason: str
     approval_token: str | None = None
-    executor: Callable[[str, dict], dict] | None = None
+    executor: Callable[[str, dict, CallContext], dict] | None = None
+    context: CallContext | None = None
+    # G3 从注册表带下来的输出标签，交给 Result Guard 一起打标
+    output_labels: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -39,6 +43,7 @@ class ExecutionOutput:
     result: dict = field(default_factory=dict)
     result_labels: list[str] = field(default_factory=list)
     result_risk: float = 0.0
+    result_transformations: list[str] = field(default_factory=list)
     approval_verified: bool = False
     elapsed_ms: int = 0
 
@@ -68,6 +73,7 @@ def run(inp: ExecutionInput) -> ExecutionOutput:
             token=inp.approval_token,
             expected_action=inp.tool_name,
             requester_id=inp.requested_by,
+            expected_session_id=inp.session_id,
         )
         if not vr.valid:
             return _fail(f"APPROVAL_INVALID:{vr.reason}", start)
@@ -85,6 +91,7 @@ def run(inp: ExecutionInput) -> ExecutionOutput:
             tool_name=inp.tool_name,
             arguments=inp.tool_arguments,
             executor=inp.executor,
+            context=inp.context,
         )
     )
     if not sb.success:
@@ -95,6 +102,7 @@ def run(inp: ExecutionInput) -> ExecutionOutput:
         ResultGuardInput(
             tool_name=inp.tool_name,
             raw_result=sb.result,
+            declared_labels=inp.output_labels,
         )
     )
     if not rg.safe:
@@ -103,6 +111,7 @@ def run(inp: ExecutionInput) -> ExecutionOutput:
             reason=f"RESULT_GUARD_FAIL:{rg.reason}",
             result_labels=rg.labels,
             result_risk=rg.risk_score,
+            result_transformations=rg.transformations,
             approval_verified=approval_verified,
             elapsed_ms=int((time.perf_counter() - start) * 1000),
         )
@@ -113,6 +122,7 @@ def run(inp: ExecutionInput) -> ExecutionOutput:
         result=sb.result,
         result_labels=rg.labels,
         result_risk=rg.risk_score,
+        result_transformations=rg.transformations,
         approval_verified=approval_verified,
         elapsed_ms=int((time.perf_counter() - start) * 1000),
     )

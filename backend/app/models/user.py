@@ -21,9 +21,19 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    # 逗号分隔的角色列表：RBAC 判定的唯一来源（不再由请求体自报）
+    roles: Mapped[str] = mapped_column(String(255), default="")
+    # 代理调用时被代理的客户 id；为空表示“以本人身份访问资源”
+    on_behalf_of: Mapped[str] = mapped_column(String(36), default="")
     mfa_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(32), default="active")
+    # 邮箱验证（自注册账号）
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verification_token_hash: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, index=True
+    )
+    verification_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -38,7 +48,7 @@ class Session(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
-    refresh_token_hash: Mapped[str] = mapped_column(String(255))
+    refresh_token_hash: Mapped[str] = mapped_column(String(255), index=True)
     device_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True)
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)

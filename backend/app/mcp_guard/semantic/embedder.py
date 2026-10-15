@@ -10,12 +10,13 @@
 import hashlib
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Iterable
 
 import httpx
 
-from app.main import settings
+from app.config import settings
 
 
 # 缓存文件位置：backend/.cache/embeddings.json
@@ -24,6 +25,7 @@ _CACHE_FILE = _CACHE_DIR / "embeddings.json"
 
 _cache: dict[str, list[float]] = {}
 _loaded = False
+_cache_lock = threading.RLock()
 
 
 def _key(model: str, text: str) -> str:
@@ -36,25 +38,29 @@ def _key(model: str, text: str) -> str:
 
 def _load_cache() -> None:
     global _loaded
-    if _loaded:
-        return
-    _loaded = True
-    if not _CACHE_FILE.exists():
-        return
-    try:
-        with open(_CACHE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            _cache.update(data)
-    except Exception:
-        pass
+    with _cache_lock:
+        if _loaded:
+            return
+        _loaded = True
+        if not _CACHE_FILE.exists():
+            return
+        try:
+            with open(_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                _cache.update(data)
+        except Exception:
+            pass
 
 
 def _save_cache() -> None:
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        with open(_CACHE_FILE, "w", encoding="utf-8") as f:
+        # 先写临时文件再原子替换：并发写入不会留下半个 JSON
+        tmp = _CACHE_FILE.with_name(_CACHE_FILE.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(_cache, f)
+        os.replace(tmp, _CACHE_FILE)
     except Exception:
         pass
 
@@ -64,8 +70,9 @@ def embed(text: str, timeout: float = 60.0) -> list[float]:
 
     model = settings.ollama_embed
     k = _key(model, text)
-    if k in _cache:
-        return _cache[k]
+    with _cache_lock:
+        if k in _cache:
+            return _cache[k]
 
     with httpx.Client(trust_env=False, timeout=timeout) as client:
         r = client.post(
@@ -74,8 +81,9 @@ def embed(text: str, timeout: float = 60.0) -> list[float]:
         )
     r.raise_for_status()
     vec = r.json()["embedding"]
-    _cache[k] = vec
-    _save_cache()
+    with _cache_lock:
+        _cache[k] = vec
+        _save_cache()
     return vec
 
 

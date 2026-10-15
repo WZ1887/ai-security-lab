@@ -1,0 +1,31 @@
+# 一律按 LF 入库；工作区行尾由 core.autocrlf 决定，避免跨平台的行尾 churn
+* text=auto
+
+# 明确的文本类型（含中文与评测样本，防止被误判成二进制）
+*.py      text
+*.md      text
+*.txt     text
+*.json    text
+*.jsonl   text
+*.html    text
+*.css     text
+*.js      text
+*.yml     text
+*.yaml    text
+*.toml    text
+*.cfg     text
+*.ini     text
+*.mako    text
+*.example text
+
+# Windows 脚本保留 CRLF
+*.bat     text eol=crlf
+*.ps1     text eol=crlf
+
+# 二进制
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.pdf     binary

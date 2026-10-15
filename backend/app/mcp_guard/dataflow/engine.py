@@ -14,9 +14,11 @@ from app.mcp_guard.dataflow.labels import (
     FINANCIAL,
     INTERNAL,
     PII,
+    PUBLIC,
     SECRET,
     SINK_EXTERNAL,
     SINK_INTERNAL,
+    TENANT_PRIVATE,
 )
 
 
@@ -36,10 +38,22 @@ _APPROVAL_RULES = {
     (INTERNAL, SINK_EXTERNAL): ("INTERNAL_TO_EXTERNAL", "DF-003"),
 }
 
+# 命中多个标签时的判定顺序：按严重程度，而不是按传入顺序，
+# 这样审计里的原因码是稳定可解释的（否则同一次违规可能报 PII 也可能报 FINANCIAL）。
+_LABEL_PRIORITY = [SECRET, PII, FINANCIAL, TENANT_PRIVATE, INTERNAL, PUBLIC]
+
+
+def _ordered_labels(labels: list[str]) -> list[str]:
+    known = [label for label in _LABEL_PRIORITY if label in labels]
+    unknown = [label for label in labels if label not in _LABEL_PRIORITY]
+    return known + unknown
+
 
 def evaluate(source_labels: list[str], sink_type: str) -> DataFlowDecision:
+    ordered = _ordered_labels(list(source_labels))
+
     # SECRET → 任何 sink 都拒
-    if SECRET in source_labels:
+    if SECRET in ordered:
         return DataFlowDecision(
             action="DENY",
             reason="SECRET_DATA_FLOW",
@@ -47,14 +61,14 @@ def evaluate(source_labels: list[str], sink_type: str) -> DataFlowDecision:
         )
 
     # DENY 规则优先
-    for label in source_labels:
+    for label in ordered:
         key = (label, sink_type)
         if key in _DENY_RULES:
             reason, rule_id = _DENY_RULES[key]
             return DataFlowDecision(action="DENY", reason=reason, rule_id=rule_id)
 
     # 再检查审批规则
-    for label in source_labels:
+    for label in ordered:
         key = (label, sink_type)
         if key in _APPROVAL_RULES:
             reason, rule_id = _APPROVAL_RULES[key]
